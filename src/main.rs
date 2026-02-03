@@ -7,7 +7,7 @@ use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{ServerCapabilities, ServerInfo};
 use rmcp::transport::stdio;
-use rmcp::{tool, tool_handler, tool_router, ServerHandler, ServiceExt};
+use rmcp::{ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::fs;
@@ -33,7 +33,9 @@ pub struct ReplaceParams {
     pattern: String,
 
     /// Replacement string (use $1, $2 for capture groups, $0 for entire match)
-    #[schemars(description = "Replacement string. Use $1, $2 for capture groups, $0 for entire match")]
+    #[schemars(
+        description = "Replacement string. Use $1, $2 for capture groups, $0 for entire match"
+    )]
     replacement: String,
 
     /// Glob pattern for files to process (e.g., "src/**/*.php")
@@ -197,30 +199,48 @@ impl RegexReplaceService {
     }
 }
 
-/// Escape `$` in replacement strings except when followed by a digit (capture group reference).
-/// This prevents `$foo` from being treated as a named capture group (which would become empty).
+/// Normalize replacement strings for the regex crate.
+/// - `$1`, `$2` etc. become `${1}`, `${2}` to prevent ambiguity with following chars
+/// - `$foo` becomes `$$foo` (escaped literal) since named capture groups are rarely intended
+/// - `$$` stays as `$$` (already escaped literal)
 fn escape_non_numeric_dollars(s: &str) -> String {
     let mut result = String::with_capacity(s.len() * 2);
-    let mut chars = s.chars().peekable();
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
 
-    while let Some(c) = chars.next() {
-        if c == '$' {
-            match chars.peek() {
-                // $0, $1, $2, etc. - capture group reference, keep as-is
-                Some(&next) if next.is_ascii_digit() => result.push('$'),
-                // $$ - already escaped literal $, keep both and consume second $
-                Some(&'$') => {
+    while i < chars.len() {
+        if chars[i] == '$' {
+            if i + 1 < chars.len() {
+                let next = chars[i + 1];
+                if next.is_ascii_digit() {
+                    // $0, $1, $2, etc. - collect all digits and wrap in ${N}
+                    result.push_str("${");
+                    i += 1;
+                    while i < chars.len() && chars[i].is_ascii_digit() {
+                        result.push(chars[i]);
+                        i += 1;
+                    }
+                    result.push('}');
+                    continue;
+                } else if next == '$' {
+                    // $$ - already escaped literal $, keep both
                     result.push_str("$$");
-                    chars.next();
+                    i += 2;
+                    continue;
+                } else {
+                    // $foo - escape by doubling the $
+                    result.push_str("$$");
+                    i += 1;
+                    continue;
                 }
-                // $foo - escape by doubling the $
-                Some(_) => result.push_str("$$"),
+            } else {
                 // Trailing $ - keep as-is
-                None => result.push('$'),
+                result.push('$');
             }
         } else {
-            result.push(c);
+            result.push(chars[i]);
         }
+        i += 1;
     }
 
     result
@@ -263,13 +283,20 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use tempfile::TempDir;
 
     #[test]
     fn test_escape_non_numeric_dollars() {
-        // Capture groups should be preserved
-        assert_eq!(escape_non_numeric_dollars("$1"), "$1");
-        assert_eq!(escape_non_numeric_dollars("$0"), "$0");
-        assert_eq!(escape_non_numeric_dollars("$1$2"), "$1$2");
+        // Capture groups get wrapped in ${N} to prevent ambiguity
+        assert_eq!(escape_non_numeric_dollars("$1"), "${1}");
+        assert_eq!(escape_non_numeric_dollars("$0"), "${0}");
+        assert_eq!(escape_non_numeric_dollars("$1$2"), "${1}${2}");
+        assert_eq!(escape_non_numeric_dollars("$12"), "${12}");
+
+        // Capture groups followed by text work correctly
+        assert_eq!(escape_non_numeric_dollars("$1_v2"), "${1}_v2");
+        assert_eq!(escape_non_numeric_dollars("fn $1()"), "fn ${1}()");
 
         // Already escaped $$ should be preserved
         assert_eq!(escape_non_numeric_dollars("$$"), "$$");
@@ -285,7 +312,7 @@ mod tests {
         // Mixed cases
         assert_eq!(
             escape_non_numeric_dollars("$request->get->getInt('$1', $2)"),
-            "$$request->get->getInt('$1', $2)"
+            "$$request->get->getInt('${1}', ${2})"
         );
 
         // Trailing $ should be preserved
@@ -293,5 +320,133 @@ mod tests {
 
         // No $ at all
         assert_eq!(escape_non_numeric_dollars("hello"), "hello");
+    }
+
+    fn create_test_file(dir: &TempDir, name: &str, content: &str) -> PathBuf {
+        let path = dir.path().join(name);
+        let mut file = fs::File::create(&path).unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+        path
+    }
+
+    #[test]
+    fn test_search_finds_matches() {
+        let dir = TempDir::new().unwrap();
+        create_test_file(&dir, "test.txt", "hello world\nfoo bar\nhello again");
+
+        let service = RegexReplaceService::new();
+        let result = service
+            .do_search(SearchParams {
+                pattern: "hello".to_string(),
+                files: dir.path().join("*.txt").to_string_lossy().to_string(),
+                limit: None,
+            })
+            .unwrap();
+
+        assert!(result.contains("hello world"));
+        assert!(result.contains("hello again"));
+        assert!(result.contains("Total: 2 matches"));
+    }
+
+    #[test]
+    fn test_search_no_matches() {
+        let dir = TempDir::new().unwrap();
+        create_test_file(&dir, "test.txt", "hello world");
+
+        let service = RegexReplaceService::new();
+        let result = service
+            .do_search(SearchParams {
+                pattern: "xyz".to_string(),
+                files: dir.path().join("*.txt").to_string_lossy().to_string(),
+                limit: None,
+            })
+            .unwrap();
+
+        assert_eq!(result, "No matches found.");
+    }
+
+    #[test]
+    fn test_replace_with_capture_groups() {
+        let dir = TempDir::new().unwrap();
+        let path = create_test_file(&dir, "test.txt", "fn hello() {}\nfn world() {}");
+
+        let service = RegexReplaceService::new();
+        let result = service
+            .do_replace(ReplaceParams {
+                pattern: r"fn (\w+)\(\)".to_string(),
+                replacement: "fn $1_v2()".to_string(),
+                files: dir.path().join("*.txt").to_string_lossy().to_string(),
+                dry_run: Some(false),
+            })
+            .unwrap();
+
+        assert!(result.contains("2 replacements"));
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("fn hello_v2()"));
+        assert!(content.contains("fn world_v2()"));
+    }
+
+    #[test]
+    fn test_replace_preserves_dollar_variables() {
+        let dir = TempDir::new().unwrap();
+        let path = create_test_file(
+            &dir,
+            "test.php",
+            "$page = intval(array_get($request->get, 'p', 1));",
+        );
+
+        let service = RegexReplaceService::new();
+        let result = service
+            .do_replace(ReplaceParams {
+                pattern: r"intval\(array_get\(\$request->get, '([^']+)', (\d+)\)\)".to_string(),
+                replacement: "$request->get->getInt('$1', $2)".to_string(),
+                files: dir.path().join("*.php").to_string_lossy().to_string(),
+                dry_run: Some(false),
+            })
+            .unwrap();
+
+        assert!(result.contains("1 replacement"));
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "$page = $request->get->getInt('p', 1);");
+    }
+
+    #[test]
+    fn test_replace_dry_run() {
+        let dir = TempDir::new().unwrap();
+        let path = create_test_file(&dir, "test.txt", "hello world");
+
+        let service = RegexReplaceService::new();
+        let result = service
+            .do_replace(ReplaceParams {
+                pattern: "hello".to_string(),
+                replacement: "goodbye".to_string(),
+                files: dir.path().join("*.txt").to_string_lossy().to_string(),
+                dry_run: Some(true),
+            })
+            .unwrap();
+
+        assert!(result.contains("(dry run)"));
+
+        // File should be unchanged
+        let content = fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "hello world");
+    }
+
+    #[test]
+    fn test_no_files_matched() {
+        let dir = TempDir::new().unwrap();
+
+        let service = RegexReplaceService::new();
+        let result = service
+            .do_search(SearchParams {
+                pattern: "test".to_string(),
+                files: dir.path().join("*.xyz").to_string_lossy().to_string(),
+                limit: None,
+            })
+            .unwrap();
+
+        assert_eq!(result, "No files matched the glob pattern.");
     }
 }
