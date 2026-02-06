@@ -200,10 +200,15 @@ impl RegexReplaceService {
 }
 
 /// Normalize replacement strings for the regex crate.
+/// - `\n`, `\t`, `\r` are converted to actual newline, tab, carriage return
+/// - `\\` is converted to a literal backslash
 /// - `$1`, `$2` etc. become `${1}`, `${2}` to prevent ambiguity with following chars
 /// - `$foo` becomes `$$foo` (escaped literal) since named capture groups are rarely intended
 /// - `$$` stays as `$$` (already escaped literal)
 fn escape_non_numeric_dollars(s: &str) -> String {
+    // First pass: process backslash escape sequences
+    let s = unescape_sequences(s);
+
     let mut result = String::with_capacity(s.len() * 2);
     let chars: Vec<char> = s.chars().collect();
     let mut i = 0;
@@ -243,6 +248,31 @@ fn escape_non_numeric_dollars(s: &str) -> String {
         i += 1;
     }
 
+    result
+}
+
+/// Convert backslash escape sequences to their actual characters.
+/// Handles: `\n` → newline, `\t` → tab, `\r` → carriage return, `\\` → backslash.
+fn unescape_sequences(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => result.push('\n'),
+                Some('t') => result.push('\t'),
+                Some('r') => result.push('\r'),
+                Some('\\') => result.push('\\'),
+                Some(other) => {
+                    result.push('\\');
+                    result.push(other);
+                }
+                None => result.push('\\'),
+            }
+        } else {
+            result.push(c);
+        }
+    }
     result
 }
 
@@ -320,6 +350,26 @@ mod tests {
 
         // No $ at all
         assert_eq!(escape_non_numeric_dollars("hello"), "hello");
+
+        // Backslash escape sequences in replacement strings
+        assert_eq!(escape_non_numeric_dollars("line1\\nline2"), "line1\nline2");
+        assert_eq!(escape_non_numeric_dollars("col1\\tcol2"), "col1\tcol2");
+        assert_eq!(escape_non_numeric_dollars("a\\\\b"), "a\\b");
+        assert_eq!(escape_non_numeric_dollars("$1\\n$2"), "${1}\n${2}");
+    }
+
+    #[test]
+    fn test_unescape_sequences() {
+        assert_eq!(unescape_sequences("hello\\nworld"), "hello\nworld");
+        assert_eq!(unescape_sequences("a\\tb"), "a\tb");
+        assert_eq!(unescape_sequences("a\\rb"), "a\rb");
+        assert_eq!(unescape_sequences("a\\\\b"), "a\\b");
+        // Unknown escapes preserved
+        assert_eq!(unescape_sequences("a\\xb"), "a\\xb");
+        // Trailing backslash preserved
+        assert_eq!(unescape_sequences("foo\\"), "foo\\");
+        // No escapes
+        assert_eq!(unescape_sequences("plain text"), "plain text");
     }
 
     fn create_test_file(dir: &TempDir, name: &str, content: &str) -> PathBuf {
@@ -432,6 +482,65 @@ mod tests {
         // File should be unchanged
         let content = fs::read_to_string(&path).unwrap();
         assert_eq!(content, "hello world");
+    }
+
+    #[test]
+    fn test_replace_with_newline_in_replacement() {
+        let dir = TempDir::new().unwrap();
+        let path = create_test_file(&dir, "test.rs", "    field_a: bool,\n    }");
+
+        let service = RegexReplaceService::new();
+        let result = service
+            .do_replace(ReplaceParams {
+                pattern: r"(field_a: bool,)".to_string(),
+                replacement: "$1\\n    field_b: f64,".to_string(),
+                files: dir.path().join("*.rs").to_string_lossy().to_string(),
+                dry_run: Some(false),
+            })
+            .unwrap();
+
+        assert!(result.contains("1 replacement"));
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "    field_a: bool,\n    field_b: f64,\n    }");
+    }
+
+    #[test]
+    fn test_replace_with_tab_in_replacement() {
+        let dir = TempDir::new().unwrap();
+        let path = create_test_file(&dir, "test.txt", "col1,col2");
+
+        let service = RegexReplaceService::new();
+        service
+            .do_replace(ReplaceParams {
+                pattern: ",".to_string(),
+                replacement: "\\t".to_string(),
+                files: dir.path().join("*.txt").to_string_lossy().to_string(),
+                dry_run: Some(false),
+            })
+            .unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "col1\tcol2");
+    }
+
+    #[test]
+    fn test_replace_literal_backslash_in_replacement() {
+        let dir = TempDir::new().unwrap();
+        let path = create_test_file(&dir, "test.txt", "forward/slash");
+
+        let service = RegexReplaceService::new();
+        service
+            .do_replace(ReplaceParams {
+                pattern: "/".to_string(),
+                replacement: "\\\\".to_string(),
+                files: dir.path().join("*.txt").to_string_lossy().to_string(),
+                dry_run: Some(false),
+            })
+            .unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "forward\\slash");
     }
 
     #[test]
