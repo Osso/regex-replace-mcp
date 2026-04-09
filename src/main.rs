@@ -11,7 +11,7 @@ use rmcp::{ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone)]
 pub struct RegexReplaceService {
@@ -96,58 +96,12 @@ impl RegexReplaceService {
             return Ok("No files matched the glob pattern.".to_string());
         }
 
-        let mut total_replacements = 0;
-        let mut files_modified = 0;
-        let mut output = String::new();
-
+        let mut report = ReplaceReport::default();
         for path in files {
-            let content = match fs::read_to_string(&path) {
-                Ok(c) => c,
-                Err(e) => {
-                    output.push_str(&format!("Skipping {:?}: {}\n", path, e));
-                    continue;
-                }
-            };
-
-            let new_content = re.replace_all(&content, replacement.as_str());
-
-            if new_content != content {
-                let count = re.find_iter(&content).count();
-                total_replacements += count;
-                files_modified += 1;
-
-                output.push_str(&format!("--- {}\n", path.display()));
-                // Show each line that changed
-                for (line_num, line) in content.lines().enumerate() {
-                    if re.is_match(line) {
-                        let replaced = re.replace_all(line, replacement.as_str());
-                        output.push_str(&format!("{}:- {}\n", line_num + 1, line));
-                        output.push_str(&format!("{}:+ {}\n", line_num + 1, replaced));
-                    }
-                }
-                output.push('\n');
-
-                if !dry_run {
-                    fs::write(&path, new_content.as_ref())
-                        .with_context(|| format!("Failed to write {:?}", path))?;
-                }
-            }
+            process_replace_file(&path, &re, replacement.as_str(), dry_run, &mut report)?;
         }
 
-        if files_modified == 0 {
-            Ok("No matches found.".to_string())
-        } else {
-            let mode = if dry_run { " (dry run)" } else { "" };
-            output.push_str(&format!(
-                "Total: {} replacement{} in {} file{}{}\n",
-                total_replacements,
-                if total_replacements == 1 { "" } else { "s" },
-                files_modified,
-                if files_modified == 1 { "" } else { "s" },
-                mode
-            ));
-            Ok(output)
-        }
+        render_replace_report(report, dry_run)
     }
 
     fn do_search(&self, params: SearchParams) -> Result<String> {
@@ -159,44 +113,138 @@ impl RegexReplaceService {
             return Ok("No files matched the glob pattern.".to_string());
         }
 
-        let mut matches = Vec::new();
-        let mut total_matches = 0;
-
-        'outer: for path in files {
-            let content = match fs::read_to_string(&path) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-
-            for (line_num, line) in content.lines().enumerate() {
-                if re.is_match(line) {
-                    total_matches += 1;
-                    if matches.len() < limit {
-                        matches.push(format!(
-                            "{}:{}: {}",
-                            path.display(),
-                            line_num + 1,
-                            line.trim()
-                        ));
-                    }
-                    if matches.len() >= limit {
-                        break 'outer;
-                    }
-                }
+        let mut report = SearchReport::default();
+        for path in files {
+            collect_file_matches(&path, &re, limit, &mut report);
+            if report.matches.len() >= limit {
+                break;
             }
         }
 
-        if matches.is_empty() {
-            Ok("No matches found.".to_string())
-        } else {
-            let mut output = matches.join("\n");
-            if total_matches > limit {
-                output.push_str(&format!("\n\n... and more (showing first {})", limit));
-            }
-            output.push_str(&format!("\n\nTotal: {} matches", total_matches));
-            Ok(output)
-        }
+        render_search_report(report, limit)
     }
+}
+
+#[derive(Default)]
+struct ReplaceReport {
+    total_replacements: usize,
+    files_modified: usize,
+    output: String,
+}
+
+fn process_replace_file(
+    path: &Path,
+    re: &Regex,
+    replacement: &str,
+    dry_run: bool,
+    report: &mut ReplaceReport,
+) -> Result<()> {
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) => {
+            report
+                .output
+                .push_str(&format!("Skipping {:?}: {}\n", path, error));
+            return Ok(());
+        }
+    };
+
+    let new_content = re.replace_all(&content, replacement);
+    if new_content == content {
+        return Ok(());
+    }
+
+    report.total_replacements += re.find_iter(&content).count();
+    report.files_modified += 1;
+    append_changed_lines(&mut report.output, path, &content, re, replacement);
+
+    if dry_run {
+        return Ok(());
+    }
+    fs::write(path, new_content.as_ref()).with_context(|| format!("Failed to write {:?}", path))?;
+    Ok(())
+}
+
+fn append_changed_lines(
+    output: &mut String,
+    path: &Path,
+    content: &str,
+    re: &Regex,
+    replacement: &str,
+) {
+    output.push_str(&format!("--- {}\n", path.display()));
+    for (line_num, line) in content.lines().enumerate() {
+        if !re.is_match(line) {
+            continue;
+        }
+        let replaced = re.replace_all(line, replacement);
+        output.push_str(&format!("{}:- {}\n", line_num + 1, line));
+        output.push_str(&format!("{}:+ {}\n", line_num + 1, replaced));
+    }
+    output.push('\n');
+}
+
+fn render_replace_report(report: ReplaceReport, dry_run: bool) -> Result<String> {
+    if report.files_modified == 0 {
+        return Ok("No matches found.".to_string());
+    }
+
+    let mut output = report.output;
+    let mode = if dry_run { " (dry run)" } else { "" };
+    output.push_str(&format!(
+        "Total: {} replacement{} in {} file{}{}\n",
+        report.total_replacements,
+        plural_suffix(report.total_replacements),
+        report.files_modified,
+        plural_suffix(report.files_modified),
+        mode
+    ));
+    Ok(output)
+}
+
+#[derive(Default)]
+struct SearchReport {
+    matches: Vec<String>,
+    total_matches: usize,
+}
+
+fn collect_file_matches(path: &Path, re: &Regex, limit: usize, report: &mut SearchReport) {
+    let Ok(content) = fs::read_to_string(path) else {
+        return;
+    };
+
+    for (line_num, line) in content.lines().enumerate() {
+        if !re.is_match(line) {
+            continue;
+        }
+        report.total_matches += 1;
+        if report.matches.len() >= limit {
+            continue;
+        }
+        report.matches.push(format!(
+            "{}:{}: {}",
+            path.display(),
+            line_num + 1,
+            line.trim()
+        ));
+    }
+}
+
+fn render_search_report(report: SearchReport, limit: usize) -> Result<String> {
+    if report.matches.is_empty() {
+        return Ok("No matches found.".to_string());
+    }
+
+    let mut output = report.matches.join("\n");
+    if report.total_matches > limit {
+        output.push_str(&format!("\n\n... and more (showing first {})", limit));
+    }
+    output.push_str(&format!("\n\nTotal: {} matches", report.total_matches));
+    Ok(output)
+}
+
+fn plural_suffix(count: usize) -> &'static str {
+    if count == 1 { "" } else { "s" }
 }
 
 /// Normalize replacement strings for the regex crate.
@@ -206,49 +254,49 @@ impl RegexReplaceService {
 /// - `$foo` becomes `$$foo` (escaped literal) since named capture groups are rarely intended
 /// - `$$` stays as `$$` (already escaped literal)
 fn escape_non_numeric_dollars(s: &str) -> String {
-    // First pass: process backslash escape sequences
     let s = unescape_sequences(s);
-
     let mut result = String::with_capacity(s.len() * 2);
     let chars: Vec<char> = s.chars().collect();
     let mut i = 0;
 
     while i < chars.len() {
-        if chars[i] == '$' {
-            if i + 1 < chars.len() {
-                let next = chars[i + 1];
-                if next.is_ascii_digit() {
-                    // $0, $1, $2, etc. - collect all digits and wrap in ${N}
-                    result.push_str("${");
-                    i += 1;
-                    while i < chars.len() && chars[i].is_ascii_digit() {
-                        result.push(chars[i]);
-                        i += 1;
-                    }
-                    result.push('}');
-                    continue;
-                } else if next == '$' {
-                    // $$ - already escaped literal $, keep both
-                    result.push_str("$$");
-                    i += 2;
-                    continue;
-                } else {
-                    // $foo - escape by doubling the $
-                    result.push_str("$$");
-                    i += 1;
-                    continue;
-                }
-            } else {
-                // Trailing $ - keep as-is
-                result.push('$');
-            }
-        } else {
+        if chars[i] != '$' {
             result.push(chars[i]);
+            i += 1;
+            continue;
         }
-        i += 1;
+        i = escape_dollar_sequence(&chars, i, &mut result);
     }
 
     result
+}
+
+fn escape_dollar_sequence(chars: &[char], index: usize, result: &mut String) -> usize {
+    let Some(next) = chars.get(index + 1).copied() else {
+        result.push('$');
+        return index + 1;
+    };
+
+    if next.is_ascii_digit() {
+        return escape_numeric_dollar(chars, index, result);
+    }
+    if next == '$' {
+        result.push_str("$$");
+        return index + 2;
+    }
+    result.push_str("$$");
+    index + 1
+}
+
+fn escape_numeric_dollar(chars: &[char], index: usize, result: &mut String) -> usize {
+    let mut i = index + 1;
+    result.push_str("${");
+    while i < chars.len() && chars[i].is_ascii_digit() {
+        result.push(chars[i]);
+        i += 1;
+    }
+    result.push('}');
+    i
 }
 
 /// Convert backslash escape sequences to their actual characters.
