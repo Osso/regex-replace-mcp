@@ -606,4 +606,137 @@ mod tests {
 
         assert_eq!(result, "No files matched the glob pattern.");
     }
+
+    #[test]
+    fn test_search_limit_reports_hidden_matches() {
+        let dir = TempDir::new().unwrap();
+        create_test_file(&dir, "a.txt", "match one\nmatch two");
+        create_test_file(&dir, "b.txt", "match three\nmatch four");
+
+        let service = RegexReplaceService::new();
+        let result = service
+            .do_search(SearchParams {
+                pattern: "match".to_string(),
+                files: dir.path().join("*.txt").to_string_lossy().to_string(),
+                limit: Some(1),
+            })
+            .unwrap();
+
+        assert!(result.contains("match one"));
+        assert!(result.contains("... and more (showing first 1)"));
+        assert!(result.contains("Total: 2 matches"));
+        assert!(!result.contains("match three"));
+    }
+
+    #[test]
+    fn test_replace_no_matches() {
+        let dir = TempDir::new().unwrap();
+        create_test_file(&dir, "test.txt", "hello world");
+
+        let service = RegexReplaceService::new();
+        let result = service
+            .do_replace(ReplaceParams {
+                pattern: "missing".to_string(),
+                replacement: "found".to_string(),
+                files: dir.path().join("*.txt").to_string_lossy().to_string(),
+                dry_run: None,
+            })
+            .unwrap();
+
+        assert_eq!(result, "No matches found.");
+    }
+
+    #[test]
+    fn test_replace_no_files_matched() {
+        let dir = TempDir::new().unwrap();
+
+        let service = RegexReplaceService::new();
+        let result = service
+            .do_replace(ReplaceParams {
+                pattern: "test".to_string(),
+                replacement: "found".to_string(),
+                files: dir.path().join("*.xyz").to_string_lossy().to_string(),
+                dry_run: None,
+            })
+            .unwrap();
+
+        assert_eq!(result, "No files matched the glob pattern.");
+    }
+
+    #[test]
+    fn test_collect_files_skips_directories() {
+        let dir = TempDir::new().unwrap();
+        create_test_file(&dir, "test.txt", "hello world");
+        fs::create_dir(dir.path().join("subdir")).unwrap();
+
+        let files = collect_files(&dir.path().join("*").to_string_lossy()).unwrap();
+
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("test.txt"));
+    }
+
+    #[test]
+    fn test_replace_file_records_read_errors() {
+        let missing_path = PathBuf::from("/tmp/regex-replace-mcp-missing-file");
+        let re = Regex::new("test").unwrap();
+        let mut report = ReplaceReport::default();
+
+        process_replace_file(&missing_path, &re, "done", false, &mut report).unwrap();
+
+        assert_eq!(report.total_replacements, 0);
+        assert_eq!(report.files_modified, 0);
+        assert!(report.output.contains("Skipping"));
+        assert!(report.output.contains("regex-replace-mcp-missing-file"));
+    }
+
+    #[test]
+    fn test_collect_file_matches_ignores_read_errors() {
+        let missing_path = PathBuf::from("/tmp/regex-replace-mcp-missing-search-file");
+        let re = Regex::new("test").unwrap();
+        let mut report = SearchReport::default();
+
+        collect_file_matches(&missing_path, &re, 10, &mut report);
+
+        assert!(report.matches.is_empty());
+        assert_eq!(report.total_matches, 0);
+    }
+
+    #[test]
+    fn test_server_info_enables_tools() {
+        let service = RegexReplaceService::new();
+        let info = service.get_info();
+
+        assert!(
+            info.instructions
+                .unwrap()
+                .contains("Regex find-and-replace MCP server")
+        );
+        assert!(info.capabilities.tools.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_tool_wrappers_return_success_and_errors() {
+        let dir = TempDir::new().unwrap();
+        create_test_file(&dir, "test.txt", "hello world");
+
+        let service = RegexReplaceService::new();
+        let search_result = service
+            .regex_search(Parameters(SearchParams {
+                pattern: "hello".to_string(),
+                files: dir.path().join("*.txt").to_string_lossy().to_string(),
+                limit: None,
+            }))
+            .await;
+        let replace_error = service
+            .regex_replace(Parameters(ReplaceParams {
+                pattern: "(".to_string(),
+                replacement: "x".to_string(),
+                files: dir.path().join("*.txt").to_string_lossy().to_string(),
+                dry_run: Some(true),
+            }))
+            .await;
+
+        assert!(search_result.contains("hello world"));
+        assert!(replace_error.contains("Error: Invalid regex pattern"));
+    }
 }
