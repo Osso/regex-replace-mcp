@@ -201,15 +201,24 @@ fn render_search_report(report: SearchReport, limit: usize) -> String {
 }
 
 fn find_search_files(pattern: &str) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    for entry in glob(pattern).context("Invalid glob pattern")? {
-        match entry {
-            Ok(path) if path.is_file() => files.push(path),
-            Ok(_) => {}
-            Err(error) => eprintln!("Glob error: {error}"),
+    let files = glob(pattern)
+        .context("Invalid glob pattern")?
+        .filter_map(path_or_report_glob_error)
+        .collect();
+    Ok(files)
+}
+
+fn path_or_report_glob_error(
+    entry: std::result::Result<PathBuf, glob::GlobError>,
+) -> Option<PathBuf> {
+    match entry {
+        Ok(path) if path.is_file() => Some(path),
+        Ok(_) => None,
+        Err(error) => {
+            eprintln!("Glob error: {error}");
+            None
         }
     }
-    Ok(files)
 }
 
 fn plural_suffix(count: usize) -> &'static str {
