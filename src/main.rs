@@ -62,7 +62,7 @@ impl RegexReplaceService {
         description = "Replace text matching a regex pattern across multiple files. Supports capture groups ($1, $2, etc.) in replacement. Returns a summary of changes made."
     )]
     async fn regex_replace(&self, Parameters(params): Parameters<ReplaceParams>) -> String {
-        match self.do_replace(params) {
+        match self.execute_replace(params) {
             Ok(message) => message,
             Err(error) => format!("Error: {error}"),
         }
@@ -72,7 +72,7 @@ impl RegexReplaceService {
         description = "Search for regex pattern matches across files. Returns matching lines with file paths and line numbers."
     )]
     async fn regex_search(&self, Parameters(params): Parameters<SearchParams>) -> String {
-        match self.do_search(params) {
+        match self.search_files(params) {
             Ok(message) => message,
             Err(error) => format!("Error: {error}"),
         }
@@ -80,7 +80,7 @@ impl RegexReplaceService {
 }
 
 impl RegexReplaceService {
-    fn do_replace(&self, params: ReplaceParams) -> Result<String> {
+    fn execute_replace(&self, params: ReplaceParams) -> Result<String> {
         let dry_run = params.dry_run.unwrap_or(false);
         let request = ReplaceRequest {
             cwd: std::env::current_dir().context("Failed to read current directory")?,
@@ -97,7 +97,7 @@ impl RegexReplaceService {
         Ok(render_replace_result(result))
     }
 
-    fn do_search(&self, params: SearchParams) -> Result<String> {
+    fn search_files(&self, params: SearchParams) -> Result<String> {
         let regex = Regex::new(&params.pattern).context("Invalid regex pattern")?;
         let limit = params.limit.unwrap_or(50);
         let files = collect_search_files(&params.files)?;
@@ -124,26 +124,41 @@ fn render_replace_result(result: ReplaceResult) -> String {
         return "No matches found.".to_string();
     }
 
-    let mut output = String::new();
-    for change in &result.changes {
-        output.push_str(&format!("--- {}\n", change.path));
-        for line in &change.line_changes {
-            output.push_str(&format!("{}:- {}\n", line.line_number, line.before));
-            output.push_str(&format!("{}:+ {}\n", line.line_number, line.after));
-        }
-        output.push('\n');
-    }
+    let changes = render_replace_changes(&result);
+    let summary = render_replace_summary(&result);
+    format!("{changes}{summary}")
+}
 
+fn render_replace_changes(result: &ReplaceResult) -> String {
+    result
+        .changes
+        .iter()
+        .map(|change| {
+            let lines = change
+                .line_changes
+                .iter()
+                .map(|line| {
+                    format!(
+                        "{}:- {}\n{}:+ {}\n",
+                        line.line_number, line.before, line.line_number, line.after
+                    )
+                })
+                .collect::<String>();
+            format!("--- {}\n{lines}\n", change.path)
+        })
+        .collect()
+}
+
+fn render_replace_summary(result: &ReplaceResult) -> String {
     let mode = if result.dry_run { " (dry run)" } else { "" };
-    output.push_str(&format!(
+    format!(
         "Total: {} replacement{} in {} file{}{}\n",
         result.total_replacements,
         plural_suffix(result.total_replacements),
         result.files_modified,
         plural_suffix(result.files_modified),
         mode
-    ));
-    output
+    )
 }
 
 #[derive(Default)]
@@ -249,7 +264,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         create_test_file(&dir, "test.txt", "hello world\nfoo bar\nhello again");
         let result = RegexReplaceService::new()
-            .do_search(SearchParams {
+            .search_files(SearchParams {
                 pattern: "hello".to_string(),
                 files: dir.path().join("*.txt").to_string_lossy().to_string(),
                 limit: None,
@@ -265,7 +280,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         create_test_file(&dir, "test.txt", "hello world");
         let result = RegexReplaceService::new()
-            .do_search(SearchParams {
+            .search_files(SearchParams {
                 pattern: "xyz".to_string(),
                 files: dir.path().join("*.txt").to_string_lossy().to_string(),
                 limit: None,
@@ -279,7 +294,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = create_test_file(&dir, "test.txt", "fn hello() {}\nfn world() {}");
         let result = RegexReplaceService::new()
-            .do_replace(replace_params(&dir, r"fn (\w+)\(\)", "fn $1_v2()"))
+            .execute_replace(replace_params(&dir, r"fn (\w+)\(\)", "fn $1_v2()"))
             .unwrap();
         assert!(result.contains("2 replacements"));
         let content = fs::read_to_string(path).unwrap();
@@ -296,7 +311,7 @@ mod tests {
             "$page = intval(array_get($request->get, 'p', 1));",
         );
         let result = RegexReplaceService::new()
-            .do_replace(replace_params(
+            .execute_replace(replace_params(
                 &dir,
                 r"intval\(array_get\(\$request->get, '([^']+)', (\d+)\)\)",
                 "$request->get->getInt('$1', $2)",
@@ -315,7 +330,7 @@ mod tests {
         let path = create_test_file(&dir, "test.txt", "hello world");
         let mut params = replace_params(&dir, "hello", "goodbye");
         params.dry_run = Some(true);
-        let result = RegexReplaceService::new().do_replace(params).unwrap();
+        let result = RegexReplaceService::new().execute_replace(params).unwrap();
         assert!(result.contains("(dry run)"));
         assert_eq!(fs::read_to_string(path).unwrap(), "hello world");
     }
@@ -325,7 +340,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = create_test_file(&dir, "test.txt", "field_a: bool,\n}");
         RegexReplaceService::new()
-            .do_replace(replace_params(
+            .execute_replace(replace_params(
                 &dir,
                 r"(field_a: bool,)",
                 "$1\\nfield_b: f64,",
@@ -342,7 +357,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let service = RegexReplaceService::new();
         let no_files = service
-            .do_replace(ReplaceParams {
+            .execute_replace(ReplaceParams {
                 pattern: "test".to_string(),
                 replacement: "done".to_string(),
                 files: dir.path().join("*.missing").to_string_lossy().to_string(),
@@ -351,7 +366,7 @@ mod tests {
             .unwrap();
         create_test_file(&dir, "test.txt", "hello world");
         let no_matches = service
-            .do_replace(replace_params(&dir, "missing", "found"))
+            .execute_replace(replace_params(&dir, "missing", "found"))
             .unwrap();
         assert_eq!(no_files, "No files matched the glob pattern.");
         assert_eq!(no_matches, "No matches found.");
@@ -363,7 +378,7 @@ mod tests {
         create_test_file(&dir, "a.txt", "match one\nmatch two");
         create_test_file(&dir, "b.txt", "match three\nmatch four");
         let result = RegexReplaceService::new()
-            .do_search(SearchParams {
+            .search_files(SearchParams {
                 pattern: "match".to_string(),
                 files: dir.path().join("*.txt").to_string_lossy().to_string(),
                 limit: Some(1),

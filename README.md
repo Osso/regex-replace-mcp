@@ -3,23 +3,25 @@
 [![CI](https://github.com/Osso/regex-replace-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Osso/regex-replace-mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-MCP server for regex find-and-replace across files. Designed for use with Claude Code and other MCP clients.
+Shared Rust engine for safe regex find-and-replace across files, exposed through MCP, a two-phase JSON CLI, and a native Pi tool.
 
 ## Installation
+
+Run the project deploy script:
+
+```bash
+./deploy.sh
+```
+
+It builds and installs both Rust binaries and registers this repository as a local Pi package.
+
+For MCP-only installation:
 
 ```bash
 cargo install --git https://github.com/Osso/regex-replace-mcp
 ```
 
-Or build from source:
-
-```bash
-git clone https://github.com/Osso/regex-replace-mcp
-cd regex-replace-mcp
-cargo build --release
-```
-
-## Configuration
+## MCP Configuration
 
 Add to your Claude Code MCP config (`~/.claude.json`):
 
@@ -55,6 +57,19 @@ Parameters:
 - `replacement`: Replacement string with capture group support
 - `files`: Glob pattern for files
 - `dry_run`: Preview changes without writing (default: false)
+
+## Native Pi Tool
+
+The `regex_replace` tool accepts:
+
+- `files`: gitignore-aware glob relative to the current working directory.
+- `pattern`: Rust regex syntax.
+- `replacement`: replacement string with `$1`, `$2`, and `$0` captures.
+- `expectedMatches`: required exact match count.
+- `dryRun`: preview without writing.
+- Optional file, byte, and match limits.
+
+Non-dry runs use a two-phase protocol. Pi previews the plan, locks every canonical target through its file-mutation queue, and applies only if the frozen targets still produce the same plan hash. Each file is replaced atomically; multi-file failures use transaction-like rollback rather than claiming literal cross-file atomic visibility.
 
 ## Capture Groups
 

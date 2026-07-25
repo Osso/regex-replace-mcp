@@ -11,6 +11,10 @@ fn write_file(root: &Path, relative: &str, content: &[u8]) {
     fs::write(path, content).unwrap();
 }
 
+fn assert_text_file(root: &Path, relative: &str, expected: &str) {
+    assert_eq!(fs::read_to_string(root.join(relative)).unwrap(), expected);
+}
+
 fn request(root: &Path, expected_matches: usize) -> ReplaceRequest {
     ReplaceRequest {
         cwd: root.to_path_buf(),
@@ -174,13 +178,7 @@ fn configured_limits_fail_before_writing() {
         replace_request.limits = limits;
 
         assert!(replace(replace_request).is_err());
-        assert_eq!(
-            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
-            "hello one hello two\n"
-        );
-        assert_eq!(
-            fs::read_to_string(dir.path().join("b.txt")).unwrap(),
-            "hello three\n"
-        );
+        assert_text_file(dir.path(), "a.txt", "hello one hello two\n");
+        assert_text_file(dir.path(), "b.txt", "hello three\n");
     }
 }
