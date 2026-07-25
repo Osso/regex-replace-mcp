@@ -13,7 +13,7 @@ Run the project deploy script:
 ./deploy.sh
 ```
 
-It builds and installs both Rust binaries and registers this repository as a local Pi package.
+It builds and installs both Rust binaries, then registers this repository as a local Pi package. Restart Pi after installation so it loads the native extension.
 
 For MCP-only installation:
 
@@ -67,9 +67,9 @@ The `regex_replace` tool accepts:
 - `replacement`: replacement string with `$1`, `$2`, and `$0` captures.
 - `expectedMatches`: required exact match count.
 - `dryRun`: preview without writing.
-- Optional file, byte, and match limits.
+- `maxFiles`, `maxTotalBytes`, `maxMatches`: optional safety limits (defaults: 100 files, 10 MiB, and 10,000 matches).
 
-Non-dry runs use a two-phase protocol. Pi previews the plan, locks every canonical target through its file-mutation queue, and applies only if the frozen targets still produce the same plan hash. Each file is replaced atomically; multi-file failures use transaction-like rollback rather than claiming literal cross-file atomic visibility.
+The tool requires approval. Non-dry runs use a two-phase protocol. Pi previews the plan, locks every canonical target through its file-mutation queue, and applies only if the frozen targets still produce the same plan hash. Each file is replaced via an atomic rename; multi-file failures use transaction-like rollback rather than claiming literal cross-file atomic visibility.
 
 ## Capture Groups
 

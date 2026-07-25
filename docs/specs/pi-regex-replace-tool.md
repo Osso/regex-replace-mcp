@@ -9,7 +9,7 @@ The Pi regex replacement tool exposes the repository's Rust replacement engine t
 - [x] Preserve existing Rust-regex capture-group, literal-dollar, and escape-sequence behavior.
 - [x] Plan all matched-file changes before writing.
 - [x] Require an exact expected match count for Pi/JSON requests and reject mismatches without modifying files.
-- [x] Reject invalid regexes, binary/non-UTF-8 inputs, zero matches, and configured file, byte, or match limit violations without modifying files.
+- [x] For Pi/JSON requests, reject invalid regexes, binary/non-UTF-8 inputs, zero actual matches, and configured file, byte, or match limit violations without modifying files.
 - [x] Respect `.gitignore` while expanding file globs.
 - [x] Return a stable plan hash and reject application when the files no longer match the approved plan.
 - [x] Produce unified diffs for every changed file in dry-run and applied results.
@@ -19,14 +19,14 @@ The Pi regex replacement tool exposes the repository's Rust replacement engine t
 
 - [x] Preserve existing MCP search and replacement behavior.
 - [x] Provide a two-phase JSON request-file CLI for planning and applying frozen replacement targets.
-- [ ] Register a native Pi `regex_replace` tool with strict parameters and approval required.
-- [ ] Serialize mutation against built-in file tools for every planned target file.
-- [ ] Return compact model output and structured diff details suitable for Pi rendering.
+- [x] Register a native Pi `regex_replace` tool with strict parameters and approval required.
+- [x] Serialize mutation against built-in file tools for every planned target file.
+- [x] Return compact model output and structured diff details suitable for Pi rendering.
 
 ### Installation
 
-- [ ] `deploy.sh` installs the Rust binaries and native Pi package.
-- [ ] Installed Pi can load and execute the tool after reload or restart.
+- [x] `deploy.sh` builds and installs the Rust binaries and registers the repository as a local Pi package.
+- [x] Installed Pi loads the tool after reload or restart.
 
 ## How it works
 
@@ -44,9 +44,9 @@ The Pi regex replacement tool exposes the repository's Rust replacement engine t
 - Rust unit and integration tests under `src/` and `tests/`.
 - TypeScript extension tests under `test/`.
 
-## Known gaps (current cycle)
+## Current status
 
-- [ ] Implement and verify the complete contract above.
+The native Pi extension and its Rust JSON CLI backend are implemented and deployed as a local Pi package. Public npm or Pi gallery publication remains out of scope.
 
 ## Out of scope
 

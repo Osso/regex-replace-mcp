@@ -5,7 +5,7 @@ The native Pi tool is a TypeScript adapter over the repository's Rust replacemen
 ## Flow
 
 1. Pi calls `regex-replace-json` with a temporary JSON `plan` request.
-2. Rust expands the glob with `.gitignore` filtering, reads every target, validates limits and the exact expected match count, and returns sorted canonical targets, original hashes, unified diffs, and a deterministic plan hash.
+2. Rust expands the glob with `.gitignore` filtering, reads every target, validates limits and the exact expected match count, and returns changed files as sorted canonical targets, original hashes, unified diffs, and a deterministic plan hash.
 3. The extension acquires Pi's per-file mutation queue for every canonical target in sorted order.
 4. Pi calls the CLI with an `apply` request containing the approved plan hash and frozen target list.
 5. Rust rereads only those targets, recomputes the plan, rejects drift before writing, stages every output beside its target, and replaces files with atomic per-file renames.
@@ -13,10 +13,14 @@ The native Pi tool is a TypeScript adapter over the repository's Rust replacemen
 
 The write protocol provides stale-plan rejection, atomic replacement per file, and transaction-like rollback. It cannot provide literal simultaneous atomic visibility across multiple filesystem paths.
 
+## Deployment
+
+`deploy.sh` builds release binaries, installs `regex-replace-mcp` and `regex-replace-json` under `$HOME/.local/bin`, and runs `pi install` for this repository. The package metadata exposes `./extensions/regex-replace.ts` as the native extension. Restart Pi after deployment to load it; the package is private and is not published to npm or the public Pi package gallery.
+
 ## Boundaries
 
 - `src/lib.rs` owns all replacement semantics and filesystem safety.
-- `src/main.rs` maps the existing MCP tools to the shared engine and preserves legacy human-readable output.
+- `src/main.rs` maps MCP replacement requests to the shared engine, keeps search behavior, and preserves legacy human-readable output.
 - `src/bin/regex-replace-json.rs` maps JSON request files to the engine.
 - `src/pi/regex-replace-tool.ts` owns plan/apply orchestration and sorted nested file queues.
 - `src/pi/json-cli-runner.ts` owns temporary request-file lifecycle and process result parsing.
