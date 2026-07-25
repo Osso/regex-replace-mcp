@@ -95,6 +95,15 @@ struct ReplacePlan {
     files: Vec<PlannedFile>,
 }
 
+struct PlanBuilder<'a> {
+    request: &'a ReplaceRequest,
+    regex: &'a Regex,
+    replacement: &'a str,
+    total_bytes: u64,
+    total_replacements: usize,
+    files: Vec<PlannedFile>,
+}
+
 pub fn replace(request: ReplaceRequest) -> Result<ReplaceResult> {
     validate_limits(&request.limits)?;
     let regex = Regex::new(&request.pattern).context("Invalid regex pattern")?;
@@ -131,46 +140,87 @@ fn plan_replacement(
 ) -> Result<ReplacePlan> {
     let paths = request_paths(request)?;
     let matched_files = paths.len();
-    let mut total_bytes = 0_u64;
-    let mut total_replacements = 0_usize;
-    let mut planned_files = Vec::new();
+    let mut builder = PlanBuilder::new(request, regex, replacement);
+    for path in paths {
+        builder.add_file(path)?;
+    }
+    Ok(builder.finish(matched_files))
+}
 
-    for canonical_path in paths {
+impl<'a> PlanBuilder<'a> {
+    fn new(request: &'a ReplaceRequest, regex: &'a Regex, replacement: &'a str) -> Self {
+        Self {
+            request,
+            regex,
+            replacement,
+            total_bytes: 0,
+            total_replacements: 0,
+            files: Vec::new(),
+        }
+    }
+
+    fn add_file(&mut self, canonical_path: PathBuf) -> Result<()> {
         let bytes = fs::read(&canonical_path)
             .with_context(|| format!("Failed to read {}", canonical_path.display()))?;
-        total_bytes = total_bytes
-            .checked_add(bytes.len() as u64)
-            .context("Total input size overflowed")?;
-        if total_bytes > request.limits.max_total_bytes {
-            bail!(
-                "matched files exceed max_total_bytes limit of {}",
-                request.limits.max_total_bytes
-            );
-        }
+        self.record_bytes(bytes.len() as u64)?;
         let original_hash = content_hash(&bytes);
         let original = decode_text_file(&canonical_path, bytes)?;
-        let replacements = regex.find_iter(&original).count();
+        let replacements = self.regex.find_iter(&original).count();
         if replacements == 0 {
-            continue;
+            return Ok(());
         }
-        total_replacements = total_replacements
-            .checked_add(replacements)
-            .context("Replacement count overflowed")?;
-        if total_replacements > request.limits.max_matches {
+        self.record_replacements(replacements)?;
+        self.files
+            .push(self.build_file(canonical_path, original_hash, original, replacements)?);
+        Ok(())
+    }
+
+    fn record_bytes(&mut self, bytes: u64) -> Result<()> {
+        self.total_bytes = self
+            .total_bytes
+            .checked_add(bytes)
+            .context("Total input size overflowed")?;
+        if self.total_bytes > self.request.limits.max_total_bytes {
             bail!(
-                "matches exceed max_matches limit of {}",
-                request.limits.max_matches
+                "matched files exceed max_total_bytes limit of {}",
+                self.request.limits.max_total_bytes
             );
         }
+        Ok(())
+    }
 
-        let new_content = regex.replace_all(&original, replacement).into_owned();
-        let display_path = display_path(&request.cwd, &canonical_path);
-        let diff = unified_diff(&display_path, &original, &new_content);
-        let line_changes = collect_line_changes(&original, regex, replacement);
+    fn record_replacements(&mut self, replacements: usize) -> Result<()> {
+        self.total_replacements = self
+            .total_replacements
+            .checked_add(replacements)
+            .context("Replacement count overflowed")?;
+        if self.total_replacements > self.request.limits.max_matches {
+            bail!(
+                "matches exceed max_matches limit of {}",
+                self.request.limits.max_matches
+            );
+        }
+        Ok(())
+    }
+
+    fn build_file(
+        &self,
+        canonical_path: PathBuf,
+        original_hash: String,
+        original: String,
+        replacements: usize,
+    ) -> Result<PlannedFile> {
+        let new_content = self
+            .regex
+            .replace_all(&original, self.replacement)
+            .into_owned();
+        let display_path = display_path(&self.request.cwd, &canonical_path);
         let permissions = fs::metadata(&canonical_path)
             .with_context(|| format!("Failed to read metadata for {}", canonical_path.display()))?
             .permissions();
-        planned_files.push(PlannedFile {
+        Ok(PlannedFile {
+            diff: unified_diff(&display_path, &original, &new_content),
+            line_changes: collect_line_changes(&original, self.regex, self.replacement),
             canonical_path,
             display_path,
             original_hash,
@@ -178,18 +228,17 @@ fn plan_replacement(
             replacement: new_content,
             permissions,
             replacements,
-            diff,
-            line_changes,
-        });
+        })
     }
 
-    let hash = plan_hash(&planned_files);
-    Ok(ReplacePlan {
-        matched_files,
-        total_replacements,
-        hash,
-        files: planned_files,
-    })
+    fn finish(self, matched_files: usize) -> ReplacePlan {
+        ReplacePlan {
+            matched_files,
+            total_replacements: self.total_replacements,
+            hash: plan_hash(&self.files),
+            files: self.files,
+        }
+    }
 }
 
 fn validate_expected_matches(expected: Option<usize>, actual: usize) -> Result<()> {
@@ -353,47 +402,64 @@ fn canonical_target_files(paths: &[PathBuf], max_files: usize) -> Result<Vec<Pat
 }
 
 fn collect_files(cwd: &Path, pattern: &str, max_files: usize) -> Result<Vec<PathBuf>> {
-    let pattern = pattern.strip_prefix('@').unwrap_or(pattern);
-    let absolute_pattern = if Path::new(pattern).is_absolute() {
-        PathBuf::from(pattern)
-    } else {
-        cwd.join(pattern)
-    };
+    let absolute_pattern = absolute_glob_pattern(cwd, pattern);
     let matcher = build_matcher(&absolute_pattern)?;
     let root = traversal_root(&absolute_pattern);
     if !root.exists() {
         return Ok(Vec::new());
     }
+    collect_walked_files(&root, &matcher, max_files)
+}
 
-    let mut canonical_paths = BTreeSet::new();
-    let walker = WalkBuilder::new(&root)
+fn absolute_glob_pattern(cwd: &Path, pattern: &str) -> PathBuf {
+    let pattern = pattern.strip_prefix('@').unwrap_or(pattern);
+    if Path::new(pattern).is_absolute() {
+        PathBuf::from(pattern)
+    } else {
+        cwd.join(pattern)
+    }
+}
+
+fn collect_walked_files(
+    root: &Path,
+    matcher: &GlobMatcher,
+    max_files: usize,
+) -> Result<Vec<PathBuf>> {
+    let walker = WalkBuilder::new(root)
         .hidden(false)
         .git_ignore(true)
         .git_global(true)
         .git_exclude(true)
         .parents(true)
         .build();
-
+    let mut canonical_paths = BTreeSet::new();
     for entry in walker {
-        let entry = entry.with_context(|| format!("Failed to walk {}", root.display()))?;
-        if !entry
-            .file_type()
-            .is_some_and(|file_type| file_type.is_file())
-        {
-            continue;
-        }
-        if !matcher.is_match(entry.path()) {
-            continue;
-        }
-        let canonical = fs::canonicalize(entry.path())
-            .with_context(|| format!("Failed to resolve {}", entry.path().display()))?;
-        canonical_paths.insert(canonical);
-        if canonical_paths.len() > max_files {
-            bail!("matched files exceed max_files limit of {max_files}");
-        }
+        collect_walk_entry(entry, root, matcher, max_files, &mut canonical_paths)?;
     }
-
     Ok(canonical_paths.into_iter().collect())
+}
+
+fn collect_walk_entry(
+    entry: std::result::Result<ignore::DirEntry, ignore::Error>,
+    root: &Path,
+    matcher: &GlobMatcher,
+    max_files: usize,
+    canonical_paths: &mut BTreeSet<PathBuf>,
+) -> Result<()> {
+    let entry = entry.with_context(|| format!("Failed to walk {}", root.display()))?;
+    let is_file = entry
+        .file_type()
+        .is_some_and(|file_type| file_type.is_file());
+    if !is_file || !matcher.is_match(entry.path()) {
+        return Ok(());
+    }
+    let canonical = fs::canonicalize(entry.path())
+        .with_context(|| format!("Failed to resolve {}", entry.path().display()))?;
+    canonical_paths.insert(canonical);
+    if canonical_paths.len() > max_files {
+        bail!("matched files exceed max_files limit of {max_files}");
+    }
+    Ok(())
 }
 
 fn build_matcher(pattern: &Path) -> Result<GlobMatcher> {

@@ -60,49 +60,62 @@ fn request_path() -> Result<PathBuf> {
 
 impl JsonRequest {
     fn into_replace_request(self) -> Result<ReplaceRequest> {
+        self.validate_expected_matches()?;
+        match self.action {
+            Action::Plan => self.into_plan_request(),
+            Action::Apply => self.into_apply_request(),
+        }
+    }
+
+    fn validate_expected_matches(&self) -> Result<()> {
         if self.expected_matches == 0 {
             bail!("expectedMatches must be greater than zero");
         }
-        let limits = ReplaceLimits {
-            max_files: self.max_files,
-            max_total_bytes: self.max_total_bytes,
-            max_matches: self.max_matches,
-        };
-        match self.action {
-            Action::Plan => {
-                if self.plan_hash.is_some() || self.targets.is_some() {
-                    bail!("plan requests must not include planHash or targets");
-                }
-                Ok(ReplaceRequest {
-                    cwd: self.cwd,
-                    files: self.files,
-                    pattern: self.pattern,
-                    replacement: self.replacement,
-                    dry_run: true,
-                    expected_matches: Some(self.expected_matches),
-                    expected_plan_hash: None,
-                    target_files: None,
-                    limits,
-                })
-            }
-            Action::Apply => {
-                let plan_hash = self.plan_hash.context("apply requests require planHash")?;
-                let targets = self.targets.context("apply requests require targets")?;
-                if targets.is_empty() {
-                    bail!("apply requests require at least one target");
-                }
-                Ok(ReplaceRequest {
-                    cwd: self.cwd,
-                    files: self.files,
-                    pattern: self.pattern,
-                    replacement: self.replacement,
-                    dry_run: false,
-                    expected_matches: Some(self.expected_matches),
-                    expected_plan_hash: Some(plan_hash),
-                    target_files: Some(targets),
-                    limits,
-                })
-            }
+        Ok(())
+    }
+
+    fn into_plan_request(self) -> Result<ReplaceRequest> {
+        if self.plan_hash.is_some() || self.targets.is_some() {
+            bail!("plan requests must not include planHash or targets");
+        }
+        Ok(self.build_replace_request(true, None, None))
+    }
+
+    fn into_apply_request(self) -> Result<ReplaceRequest> {
+        let plan_hash = self
+            .plan_hash
+            .clone()
+            .context("apply requests require planHash")?;
+        let targets = self
+            .targets
+            .clone()
+            .context("apply requests require targets")?;
+        if targets.is_empty() {
+            bail!("apply requests require at least one target");
+        }
+        Ok(self.build_replace_request(false, Some(plan_hash), Some(targets)))
+    }
+
+    fn build_replace_request(
+        self,
+        dry_run: bool,
+        expected_plan_hash: Option<String>,
+        target_files: Option<Vec<PathBuf>>,
+    ) -> ReplaceRequest {
+        ReplaceRequest {
+            cwd: self.cwd,
+            files: self.files,
+            pattern: self.pattern,
+            replacement: self.replacement,
+            dry_run,
+            expected_matches: Some(self.expected_matches),
+            expected_plan_hash,
+            target_files,
+            limits: ReplaceLimits {
+                max_files: self.max_files,
+                max_total_bytes: self.max_total_bytes,
+                max_matches: self.max_matches,
+            },
         }
     }
 }
