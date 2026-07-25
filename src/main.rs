@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use glob::glob;
 use regex::Regex;
-use regex_replace_mcp::{ReplaceLimits, ReplaceRequest, ReplaceResult, replace};
+use regex_replace_mcp::{FileChange, ReplaceLimits, ReplaceRequest, ReplaceResult, replace};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{ServerCapabilities, ServerInfo};
@@ -62,7 +62,7 @@ impl RegexReplaceService {
         description = "Replace text matching a regex pattern across multiple files. Supports capture groups ($1, $2, etc.) in replacement. Returns a summary of changes made."
     )]
     async fn regex_replace(&self, Parameters(params): Parameters<ReplaceParams>) -> String {
-        match self.execute_replace(params) {
+        match self.replace_files(params) {
             Ok(message) => message,
             Err(error) => format!("Error: {error}"),
         }
@@ -80,7 +80,7 @@ impl RegexReplaceService {
 }
 
 impl RegexReplaceService {
-    fn execute_replace(&self, params: ReplaceParams) -> Result<String> {
+    fn replace_files(&self, params: ReplaceParams) -> Result<String> {
         let dry_run = params.dry_run.unwrap_or(false);
         let request = ReplaceRequest {
             cwd: std::env::current_dir().context("Failed to read current directory")?,
@@ -100,14 +100,14 @@ impl RegexReplaceService {
     fn search_files(&self, params: SearchParams) -> Result<String> {
         let regex = Regex::new(&params.pattern).context("Invalid regex pattern")?;
         let limit = params.limit.unwrap_or(50);
-        let files = collect_search_files(&params.files)?;
+        let files = find_search_files(&params.files)?;
         if files.is_empty() {
             return Ok("No files matched the glob pattern.".to_string());
         }
 
         let mut report = SearchReport::default();
         for path in files {
-            collect_file_matches(&path, &regex, limit, &mut report);
+            read_file_matches(&path, &regex, limit, &mut report);
             if report.matches.len() >= limit {
                 break;
             }
@@ -133,18 +133,19 @@ fn render_replace_changes(result: &ReplaceResult) -> String {
     result
         .changes
         .iter()
-        .map(|change| {
-            let lines = change
-                .line_changes
-                .iter()
-                .map(|line| {
-                    format!(
-                        "{}:- {}\n{}:+ {}\n",
-                        line.line_number, line.before, line.line_number, line.after
-                    )
-                })
-                .collect::<String>();
-            format!("--- {}\n{lines}\n", change.path)
+        .map(|change| format!("--- {}\n{}\n", change.path, render_line_changes(change)))
+        .collect()
+}
+
+fn render_line_changes(change: &FileChange) -> String {
+    change
+        .line_changes
+        .iter()
+        .map(|line| {
+            format!(
+                "{}:- {}\n{}:+ {}\n",
+                line.line_number, line.before, line.line_number, line.after
+            )
         })
         .collect()
 }
@@ -167,7 +168,7 @@ struct SearchReport {
     total_matches: usize,
 }
 
-fn collect_file_matches(path: &PathBuf, regex: &Regex, limit: usize, report: &mut SearchReport) {
+fn read_file_matches(path: &PathBuf, regex: &Regex, limit: usize, report: &mut SearchReport) {
     let Ok(content) = fs::read_to_string(path) else {
         return;
     };
@@ -199,7 +200,7 @@ fn render_search_report(report: SearchReport, limit: usize) -> String {
     output
 }
 
-fn collect_search_files(pattern: &str) -> Result<Vec<PathBuf>> {
+fn find_search_files(pattern: &str) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for entry in glob(pattern).context("Invalid glob pattern")? {
         match entry {
@@ -294,7 +295,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = create_test_file(&dir, "test.txt", "fn hello() {}\nfn world() {}");
         let result = RegexReplaceService::new()
-            .execute_replace(replace_params(&dir, r"fn (\w+)\(\)", "fn $1_v2()"))
+            .replace_files(replace_params(&dir, r"fn (\w+)\(\)", "fn $1_v2()"))
             .unwrap();
         assert!(result.contains("2 replacements"));
         let content = fs::read_to_string(path).unwrap();
@@ -311,7 +312,7 @@ mod tests {
             "$page = intval(array_get($request->get, 'p', 1));",
         );
         let result = RegexReplaceService::new()
-            .execute_replace(replace_params(
+            .replace_files(replace_params(
                 &dir,
                 r"intval\(array_get\(\$request->get, '([^']+)', (\d+)\)\)",
                 "$request->get->getInt('$1', $2)",
@@ -330,7 +331,7 @@ mod tests {
         let path = create_test_file(&dir, "test.txt", "hello world");
         let mut params = replace_params(&dir, "hello", "goodbye");
         params.dry_run = Some(true);
-        let result = RegexReplaceService::new().execute_replace(params).unwrap();
+        let result = RegexReplaceService::new().replace_files(params).unwrap();
         assert!(result.contains("(dry run)"));
         assert_eq!(fs::read_to_string(path).unwrap(), "hello world");
     }
@@ -340,7 +341,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = create_test_file(&dir, "test.txt", "field_a: bool,\n}");
         RegexReplaceService::new()
-            .execute_replace(replace_params(
+            .replace_files(replace_params(
                 &dir,
                 r"(field_a: bool,)",
                 "$1\\nfield_b: f64,",
@@ -357,7 +358,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let service = RegexReplaceService::new();
         let no_files = service
-            .execute_replace(ReplaceParams {
+            .replace_files(ReplaceParams {
                 pattern: "test".to_string(),
                 replacement: "done".to_string(),
                 files: dir.path().join("*.missing").to_string_lossy().to_string(),
@@ -366,7 +367,7 @@ mod tests {
             .unwrap();
         create_test_file(&dir, "test.txt", "hello world");
         let no_matches = service
-            .execute_replace(replace_params(&dir, "missing", "found"))
+            .replace_files(replace_params(&dir, "missing", "found"))
             .unwrap();
         assert_eq!(no_files, "No files matched the glob pattern.");
         assert_eq!(no_matches, "No matches found.");
