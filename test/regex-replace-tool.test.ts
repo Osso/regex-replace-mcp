@@ -39,6 +39,8 @@ const plan: ReplaceResult = {
   ],
 };
 
+const PI_TOOL_RESULT_MAX_BYTES = 10 * 1024;
+
 const params = {
   files: "@**/*.txt",
   pattern: "old",
@@ -108,6 +110,52 @@ test("renderer falls back to model output when result details are malformed", ()
   );
 
   assert.equal(rendered?.render(200)[0]?.trimEnd(), "Applied 8 replacements in 3 files. Plan: plan-123");
+});
+
+test("large model output preserves its summary below Pi's result cap", async () => {
+  const largeDiff = Array.from({ length: 400 }, (_, index) => {
+    const lineNumber = index.toString().padStart(4, "0");
+    const padding = "x".repeat(40);
+    return `-old value ${lineNumber} ${padding}\n+new value ${lineNumber} ${padding}`;
+  }).join("\n");
+  const largeResult: ReplaceResult = {
+    dryRun: true,
+    planHash: "large-plan",
+    matchedFiles: 1,
+    totalReplacements: 400,
+    filesModified: 1,
+    changes: [
+      {
+        path: "large.md",
+        absolutePath: "/workspace/large.md",
+        originalHash: "large-hash",
+        replacements: 400,
+        diff: largeDiff,
+        lineChanges: [],
+      },
+    ],
+  };
+  let registeredTool: Parameters<RegexReplaceExtensionApi["registerTool"]>[0] | undefined;
+  regexReplaceExtension({
+    async exec() {
+      return { code: 0, stdout: JSON.stringify(largeResult), stderr: "", killed: false };
+    },
+    registerTool(tool) {
+      registeredTool = tool;
+    },
+  });
+
+  const result = await registeredTool?.execute(
+    "large-call",
+    { ...params, files: "large.md", expectedMatches: 400, dryRun: true },
+    undefined,
+    undefined,
+    { cwd: "/workspace" } as never,
+  );
+  const text = result?.content.find((part) => part.type === "text")?.text ?? "";
+
+  assert.match(text, /^Previewed 400 replacements in 1 file\. Plan: large-plan/);
+  assert.ok(Buffer.byteLength(text, "utf8") <= PI_TOOL_RESULT_MAX_BYTES);
 });
 
 test("dry-run plans once without acquiring mutation queues", async () => {

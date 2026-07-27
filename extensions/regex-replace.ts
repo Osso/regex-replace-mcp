@@ -1,8 +1,6 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  DEFAULT_MAX_BYTES,
-  DEFAULT_MAX_LINES,
   formatSize,
   truncateHead,
   withFileMutationQueue,
@@ -21,6 +19,9 @@ import {
 const extensionDirectory = dirname(fileURLToPath(import.meta.url));
 const binaryPath = resolve(extensionDirectory, "../target/release/regex-replace-json");
 const operationMutex = new OperationMutex();
+// Leave room for the truncation notice below agent-core's 10 KiB result cap.
+const MODEL_OUTPUT_MAX_BYTES = 8 * 1024;
+const MODEL_OUTPUT_MAX_LINES = 1000;
 
 const regexReplaceSchema = Type.Object(
   {
@@ -131,8 +132,8 @@ function formatModelOutput(result: ReplaceResult, diff: string): string {
   const summary = `${mode} ${result.totalReplacements} replacement${pluralSuffix(result.totalReplacements)} in ${result.filesModified} file${pluralSuffix(result.filesModified)}. Plan: ${result.planHash}`;
   const fullOutput = diff ? `${summary}\n\n${diff}` : summary;
   const truncation = truncateHead(fullOutput, {
-    maxBytes: DEFAULT_MAX_BYTES,
-    maxLines: DEFAULT_MAX_LINES,
+    maxBytes: MODEL_OUTPUT_MAX_BYTES,
+    maxLines: MODEL_OUTPUT_MAX_LINES,
   });
   if (!truncation.truncated) {
     return truncation.content;
