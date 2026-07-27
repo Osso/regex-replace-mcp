@@ -83,6 +83,33 @@ test("extension registers an approval-gated regex_replace tool", () => {
   assert.match(description ?? "", /expected match count/i);
 });
 
+test("renderer falls back to model output when result details are malformed", () => {
+  let registeredTool: Parameters<RegexReplaceExtensionApi["registerTool"]>[0] | undefined;
+  const api: RegexReplaceExtensionApi = {
+    async exec() {
+      throw new Error("rendering must not execute the CLI");
+    },
+    registerTool(tool) {
+      registeredTool = tool;
+    },
+  };
+  regexReplaceExtension(api);
+
+  const rendered = registeredTool?.renderResult?.(
+    {
+      content: [{ type: "text", text: "Applied 8 replacements in 3 files. Plan: plan-123" }],
+      details: {},
+    } as never,
+    { expanded: false, isPartial: false },
+    {
+      fg: (_color: string, text: string) => text,
+    } as never,
+    {} as never,
+  );
+
+  assert.equal(rendered?.render(200)[0]?.trimEnd(), "Applied 8 replacements in 3 files. Plan: plan-123");
+});
+
 test("dry-run plans once without acquiring mutation queues", async () => {
   const requests: CliRequest[] = [];
   const result = await runRegexReplace(

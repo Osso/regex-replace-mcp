@@ -105,9 +105,11 @@ export default function regexReplaceExtension(pi: RegexReplaceExtensionApi): voi
       if (isPartial) {
         return new Text(theme.fg("warning", "Planning regex replacement..."), 0, 0);
       }
-      const details = result.details as RegexReplaceDetails | undefined;
-      if (!details) {
-        return new Text(theme.fg("error", "Missing replacement details"), 0, 0);
+      const details = result.details;
+      if (!isRegexReplaceDetails(details)) {
+        const summary = firstTextLine(result.content);
+        const color = summary ? "success" : "error";
+        return new Text(theme.fg(color, summary ?? "Missing replacement details"), 0, 0);
       }
       const mode = details.dryRun ? "Previewed" : "Applied";
       let text = theme.fg(
@@ -151,6 +153,24 @@ function colorDiff(diff: string, theme: { fg(color: string, text: string): strin
       return theme.fg("dim", line);
     })
     .join("\n");
+}
+
+function isRegexReplaceDetails(value: unknown): value is RegexReplaceDetails {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const details = value as Partial<RegexReplaceDetails>;
+  return (
+    typeof details.dryRun === "boolean" &&
+    typeof details.totalReplacements === "number" &&
+    typeof details.filesModified === "number" &&
+    typeof details.diff === "string"
+  );
+}
+
+function firstTextLine(content: Array<{ type: string; text?: string }>): string | undefined {
+  const text = content.find((item) => item.type === "text")?.text;
+  return text?.split("\n", 1)[0];
 }
 
 function pluralSuffix(count: number): string {
