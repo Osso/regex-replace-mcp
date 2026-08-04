@@ -67,7 +67,7 @@ The `regex_replace` tool accepts:
 - `replacement`: replacement string with `$1`, `$2`, and `$0` captures.
 - `expectedMatches`: required exact match count.
 - `dryRun`: preview without writing.
-- `maxFiles`, `maxTotalBytes`, `maxMatches`: optional safety limits (defaults: 100 files, 10 MiB, and 10,000 matches).
+- `maxFiles`, `maxTotalBytes`, `maxMatches`: optional safety limits (defaults: 100 files, 10 MiB, and 10,000 matches). Normal model calls should omit these parameters so the documented defaults apply; explicit non-default values remain allowed when the user requests them.
 
 The tool requires approval. Non-dry runs use a two-phase protocol. Pi previews the plan, locks every canonical target through its file-mutation queue, and applies only if the frozen targets still produce the same plan hash. Each file is replaced via an atomic rename; multi-file failures use transaction-like rollback rather than claiming literal cross-file atomic visibility.
 

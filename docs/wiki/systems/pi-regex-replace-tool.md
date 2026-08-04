@@ -24,7 +24,9 @@ The write protocol provides stale-plan rejection, atomic replacement per file, a
 - `src/bin/regex-replace-json.rs` maps JSON request files to the engine.
 - `src/pi/regex-replace-tool.ts` owns plan/apply orchestration and sorted nested file queues.
 - `src/pi/json-cli-runner.ts` owns temporary request-file lifecycle and process result parsing.
-- `extensions/regex-replace.ts` owns Pi schema, approval metadata, rendering, and bounded model output.
+- `extensions/regex-replace.ts` owns Pi schema, approval metadata, model-call guidance, rendering, and bounded model output.
+
+Normal model calls omit optional `maxFiles`, `maxTotalBytes`, and `maxMatches` so the documented defaults apply. Explicit non-default limits remain allowed when the user requests them.
 
 ## Dependency rationale
 
