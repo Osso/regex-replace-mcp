@@ -20,6 +20,7 @@ The Pi regex replacement tool exposes the repository's Rust replacement engine t
 - [x] Preserve existing MCP search and replacement behavior.
 - [x] Provide a two-phase JSON request-file CLI for planning and applying frozen replacement targets.
 - [x] Register a native Pi `regex_replace` tool with strict parameters and approval required.
+- [x] Instruct model callers to omit optional safety limits unless the user explicitly requests non-default limits.
 - [x] Serialize mutation against built-in file tools for every planned target file.
 - [x] Return compact model output and structured diff details suitable for Pi rendering.
 

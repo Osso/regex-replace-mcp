@@ -73,6 +73,7 @@ export default function regexReplaceExtension(pi: RegexReplaceExtensionApi): voi
     promptGuidelines: [
       "Use regex_replace for multi-file regex changes; use edit for exact single-file text replacements.",
       "Call regex_replace with dryRun=true first when the expected match count is uncertain.",
+      "Do not pass maxFiles, maxTotalBytes, or maxMatches unless the user explicitly requests a non-default limit.",
     ],
     approvalRequired: true,
     parameters: regexReplaceSchema,

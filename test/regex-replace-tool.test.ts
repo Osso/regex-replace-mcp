@@ -85,6 +85,26 @@ test("extension registers an approval-gated regex_replace tool", () => {
   assert.match(description ?? "", /expected match count/i);
 });
 
+test("prompt guidance omits safety limits unless the user requests a non-default limit", () => {
+  let promptGuidelines: readonly string[] | undefined;
+  const api: RegexReplaceExtensionApi = {
+    async exec() {
+      throw new Error("registration must not execute the CLI");
+    },
+    registerTool(tool) {
+      promptGuidelines = tool.promptGuidelines;
+    },
+  };
+
+  regexReplaceExtension(api);
+
+  const guidance = promptGuidelines?.join("\\n") ?? "";
+  assert.match(
+    guidance,
+    /Do not pass maxFiles, maxTotalBytes, or maxMatches unless the user explicitly requests a non-default limit\./i,
+  );
+});
+
 test("renderer falls back to model output when result details are malformed", () => {
   let registeredTool: Parameters<RegexReplaceExtensionApi["registerTool"]>[0] | undefined;
   const api: RegexReplaceExtensionApi = {
