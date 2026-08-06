@@ -105,7 +105,34 @@ test("prompt guidance omits safety limits unless the user requests a non-default
   );
 });
 
-test("renderer falls back to model output when result details are malformed", () => {
+test("renderer reports numeric counts from valid result details", () => {
+  let registeredTool: Parameters<RegexReplaceExtensionApi["registerTool"]>[0] | undefined;
+  const api: RegexReplaceExtensionApi = {
+    async exec() {
+      throw new Error("rendering must not execute the CLI");
+    },
+    registerTool(tool) {
+      registeredTool = tool;
+    },
+  };
+  regexReplaceExtension(api);
+
+  const rendered = registeredTool?.renderResult?.(
+    {
+      content: [{ type: "text", text: "ignored model output" }],
+      details: { ...plan, dryRun: false, totalReplacements: 8, filesModified: 3, diff: "" },
+    } as never,
+    { expanded: false, isPartial: false },
+    {
+      fg: (_color: string, text: string) => text,
+    } as never,
+    {} as never,
+  );
+
+  assert.equal(rendered?.render(200)[0]?.trimEnd(), "Applied 8 replacements in 3 files");
+});
+
+test("renderer fails explicitly when result details are malformed", () => {
   let registeredTool: Parameters<RegexReplaceExtensionApi["registerTool"]>[0] | undefined;
   const api: RegexReplaceExtensionApi = {
     async exec() {
@@ -129,7 +156,7 @@ test("renderer falls back to model output when result details are malformed", ()
     {} as never,
   );
 
-  assert.equal(rendered?.render(200)[0]?.trimEnd(), "Applied 8 replacements in 3 files. Plan: plan-123");
+  assert.equal(rendered?.render(200)[0]?.trimEnd(), "Invalid replacement details");
 });
 
 test("large model output preserves its summary below Pi's result cap", async () => {

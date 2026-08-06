@@ -109,9 +109,7 @@ export default function regexReplaceExtension(pi: RegexReplaceExtensionApi): voi
       }
       const details = result.details;
       if (!isRegexReplaceDetails(details)) {
-        const summary = firstTextLine(result.content);
-        const color = summary ? "success" : "error";
-        return new Text(theme.fg(color, summary ?? "Missing replacement details"), 0, 0);
+        return new Text(theme.fg("error", "Invalid replacement details"), 0, 0);
       }
       const mode = details.dryRun ? "Previewed" : "Applied";
       let text = theme.fg(
@@ -168,11 +166,6 @@ function isRegexReplaceDetails(value: unknown): value is RegexReplaceDetails {
     typeof details.filesModified === "number" &&
     typeof details.diff === "string"
   );
-}
-
-function firstTextLine(content: Array<{ type: string; text?: string }>): string | undefined {
-  const text = content.find((item) => item.type === "text")?.text;
-  return text?.split("\n", 1)[0];
 }
 
 function pluralSuffix(count: number): string {
