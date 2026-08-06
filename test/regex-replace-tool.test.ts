@@ -132,6 +132,33 @@ test("renderer reports numeric counts from valid result details", () => {
   assert.equal(rendered?.render(200)[0]?.trimEnd(), "Applied 8 replacements in 3 files");
 });
 
+test("renderer reports numeric counts from valid preview details", () => {
+  let registeredTool: Parameters<RegexReplaceExtensionApi["registerTool"]>[0] | undefined;
+  const api: RegexReplaceExtensionApi = {
+    async exec() {
+      throw new Error("rendering must not execute the CLI");
+    },
+    registerTool(tool) {
+      registeredTool = tool;
+    },
+  };
+  regexReplaceExtension(api);
+
+  const rendered = registeredTool?.renderResult?.(
+    {
+      content: [{ type: "text", text: "ignored model output" }],
+      details: { ...plan, dryRun: true, totalReplacements: 8, filesModified: 3, diff: "" },
+    } as never,
+    { expanded: false, isPartial: false },
+    {
+      fg: (_color: string, text: string) => text,
+    } as never,
+    {} as never,
+  );
+
+  assert.equal(rendered?.render(200)[0]?.trimEnd(), "Previewed 8 replacements in 3 files");
+});
+
 test("renderer fails explicitly when result details are malformed", () => {
   let registeredTool: Parameters<RegexReplaceExtensionApi["registerTool"]>[0] | undefined;
   const api: RegexReplaceExtensionApi = {
