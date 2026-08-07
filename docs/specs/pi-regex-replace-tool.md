@@ -22,7 +22,8 @@ The Pi regex replacement tool exposes the repository's Rust replacement engine t
 - [x] Register a native Pi `regex_replace` tool with strict parameters and approval required.
 - [x] Instruct model callers to omit optional safety limits unless the user explicitly requests non-default limits.
 - [x] Serialize mutation against built-in file tools for every planned target file.
-- [x] Return compact model output and structured diff details suitable for Pi rendering.
+- [x] Return compact model output and native Pi result details with `dryRun`, `totalReplacements`, and `filesModified` plus a bounded `diff`, keeping serialized details below Pi's 10 KiB runtime cap.
+- [x] Explicitly mark oversized diffs as truncated in result details and model output rather than allowing Pi to render `Invalid replacement details`.
 
 ### Installation
 
