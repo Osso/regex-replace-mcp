@@ -22,6 +22,9 @@ const operationMutex = new OperationMutex();
 // Leave room for the truncation notice below agent-core's 10 KiB result cap.
 const MODEL_OUTPUT_MAX_BYTES = 8 * 1024;
 const MODEL_OUTPUT_MAX_LINES = 1000;
+// Pi replaces serialized tool details above 10 KiB with truncation metadata.
+const RENDER_DETAILS_MAX_BYTES = 8 * 1024;
+const RENDER_DETAILS_TRUNCATION_NOTICE = "[Diff truncated in tool details.]";
 
 const regexReplaceSchema = Type.Object(
   {
@@ -43,7 +46,10 @@ const regexReplaceSchema = Type.Object(
 
 type RegexReplaceInput = Static<typeof regexReplaceSchema>;
 
-interface RegexReplaceDetails extends ReplaceResult {
+interface RegexReplaceDetails {
+  dryRun: boolean;
+  totalReplacements: number;
+  filesModified: number;
   diff: string;
 }
 
@@ -93,7 +99,7 @@ export default function regexReplaceExtension(pi: RegexReplaceExtensionApi): voi
       const diff = result.changes.map((change) => change.diff).join("\n");
       return {
         content: [{ type: "text", text: formatModelOutput(result, diff) }],
-        details: { ...result, diff } satisfies RegexReplaceDetails,
+        details: buildRenderDetails(result, diff),
       };
     },
 
@@ -126,6 +132,37 @@ export default function regexReplaceExtension(pi: RegexReplaceExtensionApi): voi
   pi.registerTool(tool);
 }
 
+function buildRenderDetails(result: ReplaceResult, diff: string): RegexReplaceDetails {
+  const summary = {
+    dryRun: result.dryRun,
+    totalReplacements: result.totalReplacements,
+    filesModified: result.filesModified,
+  };
+  const fullDetails = { ...summary, diff };
+  if (serializedDetailsBytes(fullDetails) <= RENDER_DETAILS_MAX_BYTES) {
+    return fullDetails;
+  }
+
+  let boundedDiff = "";
+  for (const line of diff.split("\n")) {
+    const candidate = boundedDiff ? `${boundedDiff}\n${line}` : line;
+    const truncatedDiff = `${candidate}\n${RENDER_DETAILS_TRUNCATION_NOTICE}`;
+    if (serializedDetailsBytes({ ...summary, diff: truncatedDiff }) > RENDER_DETAILS_MAX_BYTES) {
+      break;
+    }
+    boundedDiff = candidate;
+  }
+
+  const truncatedDiff = boundedDiff
+    ? `${boundedDiff}\n${RENDER_DETAILS_TRUNCATION_NOTICE}`
+    : RENDER_DETAILS_TRUNCATION_NOTICE;
+  return { ...summary, diff: truncatedDiff };
+}
+
+function serializedDetailsBytes(details: RegexReplaceDetails): number {
+  return Buffer.byteLength(JSON.stringify(details), "utf8");
+}
+
 function formatModelOutput(result: ReplaceResult, diff: string): string {
   const mode = result.dryRun ? "Previewed" : "Applied";
   const summary = `${mode} ${result.totalReplacements} replacement${pluralSuffix(result.totalReplacements)} in ${result.filesModified} file${pluralSuffix(result.filesModified)}. Plan: ${result.planHash}`;
@@ -137,7 +174,7 @@ function formatModelOutput(result: ReplaceResult, diff: string): string {
   if (!truncation.truncated) {
     return truncation.content;
   }
-  return `${truncation.content}\n\n[Diff truncated: ${truncation.outputLines}/${truncation.totalLines} lines, ${formatSize(truncation.outputBytes)}/${formatSize(truncation.totalBytes)}. Full diff remains in tool details.]`;
+  return `${truncation.content}\n\n[Diff truncated: ${truncation.outputLines}/${truncation.totalLines} lines, ${formatSize(truncation.outputBytes)}/${formatSize(truncation.totalBytes)}.]`;
 }
 
 function colorDiff(diff: string, theme: { fg(color: string, text: string): string }): string {

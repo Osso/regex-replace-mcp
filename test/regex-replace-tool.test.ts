@@ -159,6 +159,98 @@ test("renderer reports numeric counts from valid preview details", () => {
   assert.equal(rendered?.render(200)[0]?.trimEnd(), "Previewed 8 replacements in 3 files");
 });
 
+test("renderer keeps preview and apply details below Pi's truncation boundary", async () => {
+  const path = "docs/wiki/investigations/patch-12-1-behavior-inventory.md";
+  const lineChanges = Array.from({ length: 30 }, (_, index) => {
+    const lineNumber = 200 + index;
+    const context = `behavior row ${lineNumber} ${"x".repeat(240)}`;
+    return {
+      lineNumber,
+      before: `| best-effort  | best-effort  | ${context} |`,
+      after: `| supported    | supported    | ${context} |`,
+    };
+  });
+  const preview: ReplaceResult = {
+    dryRun: true,
+    planHash: "reported-preview-plan",
+    matchedFiles: 1,
+    totalReplacements: 30,
+    filesModified: 1,
+    changes: [
+      {
+        path,
+        absolutePath: `/workspace/${path}`,
+        originalHash: "reported-inventory-hash",
+        replacements: 30,
+        diff: [
+          `--- ${path}`,
+          `+++ ${path}`,
+          ...lineChanges.flatMap(({ lineNumber, before, after }) => [
+            `@@ -${lineNumber},1 +${lineNumber},1 @@`,
+            `-${before}`,
+            `+${after}`,
+          ]),
+        ].join("\n"),
+        lineChanges,
+      },
+    ],
+  };
+  let registeredTool: Parameters<RegexReplaceExtensionApi["registerTool"]>[0] | undefined;
+  regexReplaceExtension({
+    async exec(_command, args) {
+      const request = JSON.parse(await readFile(args[0] ?? "", "utf8"));
+      const result = { ...preview, dryRun: request.action === "plan" };
+      return { code: 0, stdout: JSON.stringify(result), stderr: "", killed: false };
+    },
+    registerTool(tool) {
+      registeredTool = tool;
+    },
+  });
+
+  const cases = [
+    { dryRun: true, expected: "Previewed 30 replacements in 1 file" },
+    { dryRun: false, expected: "Applied 30 replacements in 1 file" },
+  ];
+  for (const { dryRun, expected } of cases) {
+    const result = await registeredTool?.execute(
+      `reported-${dryRun ? "preview" : "apply"}-call`,
+      {
+        ...params,
+        files: path,
+        pattern: "\\| best-effort  \\| best-effort  \\|",
+        replacement: "| supported    | supported    |",
+        expectedMatches: 30,
+        dryRun,
+      },
+      undefined,
+      undefined,
+      { cwd: "/workspace" } as never,
+    );
+    assert.ok(result);
+    const serializedDetails = JSON.stringify(result.details);
+    const detailsBytes = Buffer.byteLength(serializedDetails, "utf8");
+    const deliveredDetails =
+      detailsBytes > PI_TOOL_RESULT_MAX_BYTES
+        ? {
+            truncated: true,
+            originalBytes: detailsBytes,
+            maxBytes: PI_TOOL_RESULT_MAX_BYTES,
+          }
+        : result.details;
+
+    const rendered = registeredTool?.renderResult?.(
+      { ...result, details: deliveredDetails } as never,
+      { expanded: false, isPartial: false },
+      {
+        fg: (_color: string, text: string) => text,
+      } as never,
+      {} as never,
+    );
+
+    assert.equal(rendered?.render(200)[0]?.trimEnd(), expected);
+  }
+});
+
 test("renderer fails explicitly when result details are malformed", () => {
   let registeredTool: Parameters<RegexReplaceExtensionApi["registerTool"]>[0] | undefined;
   const api: RegexReplaceExtensionApi = {
